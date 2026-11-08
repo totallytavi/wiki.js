@@ -341,7 +341,7 @@ export default class DiscordAuthentication {
 
     return {
       id: String(account.id),
-      email: this.conf.hideEmails ? 'user@wikijs.local' : account.email,
+      email: this.conf.hideEmails ? 'discord@wikijs.local' : account.email,
       // -> `global_name` is the display name; `username` is the handle, and is all an account that
       //    has not set one has
       name: account.global_name || account.username,
