@@ -1,0 +1,3 @@
+FROM ghcr.io/requarks/wiki:3
+
+COPY --chown=node:node backend/modules/authentication/discord /wiki/backend/modules/authentication/discord
