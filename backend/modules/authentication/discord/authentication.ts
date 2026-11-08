@@ -226,6 +226,12 @@ export default class DiscordAuthentication {
       'scope',
       serverId ? 'identify email guilds.members.read' : 'identify email'
     )
+    if (this.conf.hideEmails) {
+      url.searchParams.set(
+        'scope',
+        url.searchParams.get('scope')!.replace('email', '')
+      );
+    }
     url.searchParams.set('state', state)
     // -> Skips the authorization screen for somebody who has already granted exactly these scopes.
     //    Discord shows it anyway when they have not, so this is a returning user's convenience
@@ -291,7 +297,7 @@ export default class DiscordAuthentication {
       says nothing about who holds the mailbox, and the mailbox is what an account here is matched
       by, so it is refused rather than trusted.
     */
-    if (!account.email || account.verified !== true) {
+    if (!this.conf.hideEmail && (!account.email || account.verified !== true)) {
       strategyDebug(
         this,
         `${account.username} ${account.email ? 'has not confirmed their address with Discord' : 'gave no address — was the `email` scope granted?'}`
@@ -335,7 +341,7 @@ export default class DiscordAuthentication {
 
     return {
       id: String(account.id),
-      email: account.email,
+      email: this.conf.hideEmails ? 'user@wikijs.local' : account.email,
       // -> `global_name` is the display name; `username` is the handle, and is all an account that
       //    has not set one has
       name: account.global_name || account.username,
