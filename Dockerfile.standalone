@@ -3,11 +3,6 @@
 ARG VARIANT=26
 FROM node:${VARIANT}
 
-# For use with a custom build context.
-# We trick the container into acting as if
-# it was built from the .devcontainer folder
-RUN cd .devcontainer
-
 ARG USERNAME=node
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -50,11 +45,11 @@ ENV npm_config_fund=false
 RUN sed -i 's/#force_color_prompt=/force_color_prompt=/' /root/.bashrc
 
 # Copy wait-for utility
-COPY wait-for.sh /usr/local/bin/wait-for
+COPY .devcontainer/wait-for.sh /usr/local/bin/wait-for
 RUN chmod +rx /usr/local/bin/wait-for
 
 # Copy the startup file
-COPY app-init.sh /docker-init.sh
+COPY .devcontainer/app-init.sh /docker-init.sh
 RUN sed -i 's/\r$//' /docker-init.sh && \
     chmod +x /docker-init.sh
 
