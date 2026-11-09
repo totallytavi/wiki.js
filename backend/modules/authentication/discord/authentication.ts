@@ -293,11 +293,17 @@ export default class DiscordAuthentication {
       throw new Error('ERR_NO_PROVIDER_ACCOUNT')
     }
     /*
+      Hide emails per the configuration, using a guaranteed unique address
+    */
+    if (this.conf.hideEmails && account.email) {
+      account.email = `discord+${account.id}@wikijs.local`;
+    }
+    /*
       `verified` is Discord's own statement that the address has been confirmed. An unverified one
       says nothing about who holds the mailbox, and the mailbox is what an account here is matched
       by, so it is refused rather than trusted.
     */
-    if (!this.conf.hideEmail && (!account.email || account.verified !== true)) {
+    if (!account.email || account.verified !== true) {
       strategyDebug(
         this,
         `${account.username} ${account.email ? 'has not confirmed their address with Discord' : 'gave no address — was the `email` scope granted?'}`
@@ -341,7 +347,7 @@ export default class DiscordAuthentication {
 
     return {
       id: String(account.id),
-      email: this.conf.hideEmails ? 'discord@wikijs.local' : account.email,
+      email: account.email,
       // -> `global_name` is the display name; `username` is the handle, and is all an account that
       //    has not set one has
       name: account.global_name || account.username,
