@@ -293,10 +293,11 @@ export default class DiscordAuthentication {
       throw new Error('ERR_NO_PROVIDER_ACCOUNT')
     }
     /*
-      Hide emails per the configuration, using a guaranteed unique address
+      Overwrite emails per the configuration, using a verified, guaranteed unique address
     */
-    if (this.conf.hideEmails && account.email) {
+    if (this.conf.hideEmails) {
       account.email = `discord+${account.id}@wikijs.local`;
+      account.verified = true;
     }
     /*
       `verified` is Discord's own statement that the address has been confirmed. An unverified one
