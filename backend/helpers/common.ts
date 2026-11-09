@@ -366,6 +366,35 @@ export function isValidPathSegment(segment: string): boolean {
 }
 
 /**
+ * The path segment a title suggests, for a page named after its title rather than by its author.
+ *
+ * Anything that cannot be in a segment becomes a hyphen rather than disappearing — `C++ Guide` is
+ * `c-guide`, `Add dark mode.` is `add-dark-mode` — and the result is cut to `maxBytes` on a whole
+ * character. Empty when the title holds no letter or digit at all. Mirrored by `pathSegmentFromTitle`
+ * in the frontend's `helpers/pagePaths.js`.
+ *
+ * @param maxBytes Room to leave below `MAX_PATH_SEGMENT_BYTES`, for a caller that may still add a
+ *   suffix to what comes back
+ */
+export function pathSegmentFromTitle(title: string, maxBytes = MAX_PATH_SEGMENT_BYTES): string {
+  const slug = title
+    .toLowerCase()
+    .normalize('NFC')
+    .replaceAll(/[^\p{L}\p{M}\p{N}]+/gu, '-')
+    .replaceAll(/^-+|-+$/g, '')
+  let kept = ''
+  let used = 0
+  for (const char of slug) {
+    used += Buffer.byteLength(char, 'utf8')
+    if (used > maxBytes) {
+      break
+    }
+    kept += char
+  }
+  return kept.replace(/-+$/, '')
+}
+
+/**
  * Reduce a page path to the single form it is looked up under.
  *
  * A path is a URL, and a URL that differs only in casing, in how a space was encoded, or in how an
@@ -428,6 +457,35 @@ export function normalizeNewPagePath(input?: string | null): string {
     .split('/')
     .map((segment) => segment.replaceAll(/^-+|-+$/g, ''))
     .join('/')
+}
+
+/**
+ * A page path as it is about to be stored, refused if what is left is not addressable.
+ *
+ * Casing, spaces and underscores are corrected rather than rejected — `My_Page` is a path someone
+ * meant, and it means `my-page`. Anything else outside what a segment may hold
+ * (`isValidPathSegment`) is not something to guess at.
+ *
+ * This is the path a page create, move or restore WRITES, and so the one its permission check has to
+ * be asked of: a rule is matched against stored paths, and checking the path as the request spelled
+ * it would let `HR/Notice` past a rule over `hr`, and then store it at `hr/notice`.
+ *
+ * @param current The path the page already has, when this is a move or a restore. Asked for the same
+ *   path back, it gets exactly that path: one written before underscores became hyphens keeps its
+ *   `_`, rather than a rename that only changes the title moving the page somewhere new.
+ */
+export function pagePathToWrite(input: string, current?: string): string {
+  if (current !== undefined && normalizePagePath(input) === current) {
+    return current
+  }
+  const path = normalizeNewPagePath(input)
+  if (!path.split('/').every(isValidPathSegment)) {
+    throw new CustomError(
+      'pageInvalidPath',
+      `A page path may only contain letters, numbers, hyphens and slashes, and each part of it be at most ${MAX_PATH_SEGMENT_BYTES} bytes long.`
+    )
+  }
+  return path
 }
 
 /**

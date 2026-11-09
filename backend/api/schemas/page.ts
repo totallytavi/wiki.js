@@ -215,6 +215,11 @@ export async function registerSchemas(app: FastifyInstance): Promise<void> {
         description:
           'The page is password protected and this requester has not entered it, so `content`, `render` and `toc` were withheld. Unlock it with `POST …/unlock`.'
       },
+      isEditLocked: {
+        type: 'boolean',
+        description:
+          'The page is locked against edits — unrelated to `isLocked`, which is about its password. While set, saving, converting, moving or deleting the page, and changing its owners or lifecycle rules, answers 423, as does suggesting an edit to it. Set and cleared with `PUT …/edit-lock`, which needs `manage:pages` on the page.'
+      },
       relations: {
         type: 'array',
         items: { type: 'object', additionalProperties: true }
@@ -376,6 +381,11 @@ export async function registerSchemas(app: FastifyInstance): Promise<void> {
             items: { type: 'string' },
             description:
               'The page permissions held AT THIS PATH, as this reader’s groups’ rules decide. The same answer `pages/userPermissions` gives for the path.'
+          },
+          canWriteOnSite: {
+            type: 'boolean',
+            description:
+              'Some rule of the requester’s grants `write:pages` somewhere on this site, in any locale — not necessarily here. With source access to this page, that is what offering to duplicate it turns on: the copy is saved wherever the requester may write, and the save is checked there.'
           },
           canSuggestEdits: {
             type: 'boolean',

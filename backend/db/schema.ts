@@ -583,6 +583,12 @@ export const groups = pgTable(
     redirectOnLogin: varchar({ length: 255 }).notNull().default(''),
     redirectOnFirstLogin: varchar({ length: 255 }).notNull().default(''),
     redirectOnLogout: varchar({ length: 255 }).notNull().default(''),
+    /**
+     * Whether every member must sign in with two-factor authentication, on top of the strategy's own
+     * `enforceTfa` and the user's own `tfaRequired`. Asked wherever those two are; see
+     * `users.isTfaRequiredByGroup`.
+     */
+    tfaRequired: boolean().notNull().default(false),
     isSystem: boolean().notNull().default(false),
     /**
      * What the directory provisioning this group calls it, as SCIM's `externalId`.
@@ -1200,6 +1206,14 @@ export const pages = pgTable(
       (): SQL => sql`${pages.publishState} != 'draft' AND ${pages.isSearchable}`
     ),
     password: varchar({ length: 255 }),
+    /**
+     * Whether the page is locked against edits: its content, its properties, its owners and lifecycle
+     * rules, its editor, its path, and its existence. Set and cleared only with `manage:pages` on the
+     * page (`PUT …/edit-lock`); every write path in `models/pages.ts` refuses a locked page.
+     *
+     * Not the password lock, which is `password` above and `isLocked` on the API's page.
+     */
+    isEditLocked: boolean().notNull().default(false),
     /**
      * How readers have rated the page, per scale: `{ thumbs?: { count, sum, up, down }, stars?: … }`.
      * A cache of the `pageRatings` rows, rewritten by every rating and withdrawal (`models/pageRatings.ts`)

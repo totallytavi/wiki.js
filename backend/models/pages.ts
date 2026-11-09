@@ -8,10 +8,9 @@ import {
 import {
   CustomError,
   generatePathHash,
-  isValidPathSegment,
-  MAX_PATH_SEGMENT_BYTES,
   normalizeNewPagePath,
   normalizePagePath,
+  pagePathToWrite,
   timingSafeCompare
 } from '../helpers/common.ts'
 import { invalidateAppShellCache } from '../helpers/appShell.ts'
@@ -346,6 +345,11 @@ export interface Page {
   password?: string | null
   /** Whether the body was withheld because the page is password protected. See `getPage`. */
   isLocked: boolean
+  /**
+   * Whether the page is locked against edits, which is nothing to do with `isLocked` above. Only
+   * `manage:pages` sets or clears it (`setEditLock`), and every write here refuses a locked page.
+   */
+  isEditLocked: boolean
   /** Whether this page shows what links to it. The site-wide switch is `features.backlinks`. */
   allowBacklinks: boolean
   relations: any[]
@@ -579,12 +583,12 @@ export interface RelinkSkip {
   /** What a page rule may address it by, so the caller can ask whether this page may be named. */
   tags: string[]
   /**
-   * `forbidden` — the mover may not edit it. `notInSource` — the link is in its render but could not
+   * `forbidden` — the mover may not edit it. `locked` — it is locked against edits. `notInSource` — the link is in its render but could not
    * be found in its source in a form that can be rewritten, so rewriting the render alone would only
    * last until the next render from that source. `failed` — the save was refused, and the page left
    * as it was.
    */
-  reason: 'forbidden' | 'notInSource' | 'failed'
+  reason: 'forbidden' | 'locked' | 'notInSource' | 'failed'
 }
 
 export interface RelinkResult {
@@ -631,31 +635,6 @@ function renderPermissionsFor(actor: PageActor, page: RulePageRef): RenderPermis
     scripts: WIKI.models.groups.checkAccess(actor, 'write:scripts', page),
     styles: WIKI.models.groups.checkAccess(actor, 'write:styles', page)
   }
-}
-
-/**
- * Normalize a path to the form that gets stored, and refuse it if what is left is not addressable.
- *
- * Casing, spaces and underscores are corrected rather than rejected — `My_Page` is a path someone
- * meant, and it means `my-page`. Anything else outside what a segment may hold
- * (`isValidPathSegment`) is not something to guess at.
- *
- * @param current The path the page already has, when this is a move or a restore. Asked for the same
- *   path back, it gets exactly that path: one written before underscores became hyphens keeps its
- *   `_`, rather than a rename that only changes the title moving the page somewhere new.
- */
-function normalizePath(input: string, current?: string): string {
-  if (current !== undefined && normalizePagePath(input) === current) {
-    return current
-  }
-  const path = normalizeNewPagePath(input)
-  if (!path.split('/').every(isValidPathSegment)) {
-    throw new CustomError(
-      'pageInvalidPath',
-      `A page path may only contain letters, numbers, hyphens and slashes, and each part of it be at most ${MAX_PATH_SEGMENT_BYTES} bytes long.`
-    )
-  }
-  return path
 }
 
 /**
@@ -1168,6 +1147,7 @@ class Pages {
       isSearchable: row.isSearchable,
       ...(withPassword ? { password: row.password } : {}),
       isLocked: locked,
+      isEditLocked: row.isEditLocked,
       relations: locked ? [] : (row.relations ?? []),
       // -> Not withheld from a locked page: which languages a page exists in is not what a password
       //    covers, and the lock screen is where a reader most needs to be able to switch to one
@@ -2193,7 +2173,7 @@ class Pages {
       throw new CustomError('pageInvalidSite', 'This site does not exist.', 404)
     }
 
-    const path = normalizePath(input.path)
+    const path = pagePathToWrite(input.path)
     const locale = input.locale || this.defaultLocale(siteId)
     const title = (input.title ?? '').trim()
     if (title.length < 1) {
@@ -2390,6 +2370,48 @@ class Pages {
   }
 
   /**
+   * Refuse to change a page that is locked against edits.
+   *
+   * Called by every write in this model before it writes anything — `updatePage`, `convertPage`,
+   * `movePage` and `deletePage` — so that whatever reaches them (a route, an approved suggestion, an
+   * MCP tool, a lifecycle rule, a storage target's sync) meets the lock in one place. The routes that
+   * change what is kept BESIDE a page (its owners, its lifecycle rules, a suggestion) ask it too.
+   *
+   * 423 Locked: the request is well formed and the caller may well hold the permission, and what
+   * stands in the way is the state of the page, which `manage:pages` can change.
+   *
+   * **Except during a storage import** (`storage.importingFrom` — a git or SFTP sync taking in what
+   * changed on the remote, or a restore from a folder). There the target is the authority on the
+   * file, and the file has ALREADY changed: refusing would not keep the edit out, only leave the wiki
+   * and the target disagreeing until somebody noticed. So the edit or the deletion is taken in, and
+   * an edited page stays locked — `updatePage` never writes `isEditLocked`. Scoped by the import's
+   * own async context rather than a parameter, so nothing outside one can ask to be let through.
+   */
+  assertEditable(page: { isEditLocked: boolean }): void {
+    if (page.isEditLocked && !WIKI.models.storage.isImporting()) {
+      throw new CustomError('pageEditLocked', 'This page is locked and cannot be edited.', 423)
+    }
+  }
+
+  /**
+   * Lock a page against edits, or unlock it.
+   *
+   * Only the flag: not a save, so it records no version, moves neither `updatedAt` nor anything a
+   * storage target holds, and is not undone by restoring a version (`EXCLUDED_FROM_META`). Who may
+   * call it is the route's question — `manage:pages` on the page.
+   *
+   * @returns Whether the page was there to change
+   */
+  async setEditLock(siteId: string, id: string, isEditLocked: boolean): Promise<boolean> {
+    const updated = await WIKI.db
+      .update(pagesTable)
+      .set({ isEditLocked })
+      .where(and(eq(pagesTable.id, id), eq(pagesTable.siteId, siteId)))
+      .returning({ id: pagesTable.id })
+    return updated.length > 0
+  }
+
+  /**
    * Update a page. Only the fields present in the patch are touched.
    */
   async updatePage(
@@ -2407,6 +2429,7 @@ class Pages {
     if (!existing) {
       return null
     }
+    this.assertEditable(existing)
 
     // -> Ahead of the locale relations, which write: a save refused for its tags must change nothing
     assertValidTags(patch.tags, existing.tags ?? [])
@@ -2686,7 +2709,11 @@ class Pages {
     actor: PageActor
   ): Promise<PageChange | null> {
     const results = await WIKI.db
-      .select({ id: pagesTable.id, editor: pagesTable.editor })
+      .select({
+        id: pagesTable.id,
+        editor: pagesTable.editor,
+        isEditLocked: pagesTable.isEditLocked
+      })
       .from(pagesTable)
       .where(and(eq(pagesTable.id, id), eq(pagesTable.siteId, siteId)))
       .limit(1)
@@ -2694,6 +2721,8 @@ class Pages {
     if (!existing) {
       return null
     }
+    // -> Before the editor column is written, which `updatePage` refusing afterwards would not undo
+    this.assertEditable(existing)
     if (existing.editor === editor) {
       throw new CustomError('pageAlreadyUsesEditor', 'This page already uses that editor.')
     }
@@ -2738,8 +2767,9 @@ class Pages {
     if (!page) {
       return null
     }
+    this.assertEditable(page)
     const existingContent = page.content
-    const newPath = normalizePath(path, page.path)
+    const newPath = pagePathToWrite(path, page.path)
     /*
       A move may cross locales — the same page, translated, is the same page moved — so the
       destination is a locale AND a path, and everything below asks about the pair rather than about
@@ -3008,7 +3038,8 @@ class Pages {
           editor: pagesTable.editor,
           content: pagesTable.content,
           render: pagesTable.render,
-          relations: pagesTable.relations
+          relations: pagesTable.relations,
+          isEditLocked: pagesTable.isEditLocked
         })
         .from(pagesTable)
         .where(eq(pagesTable.id, pageId))
@@ -3035,6 +3066,11 @@ class Pages {
         })
       ) {
         skip('forbidden')
+        continue
+      }
+      // -> Asked here rather than left to `updatePage` to refuse, so it is reported for what it is
+      if (page.isEditLocked) {
+        skip('locked')
         continue
       }
 
@@ -3164,6 +3200,7 @@ class Pages {
     if (!page) {
       return null
     }
+    this.assertEditable(page)
     // -> Before the row goes, and this version is what recovering the page would be built from
     const versionId = await WIKI.models.pageHistory.record({
       siteId,
@@ -3274,7 +3311,7 @@ class Pages {
 
     const meta = deletion.meta
     const title = input.title?.trim() || deletion.title
-    const path = normalizePath(input.path ?? deletion.path, deletion.path)
+    const path = pagePathToWrite(input.path ?? deletion.path, deletion.path)
     const locale = input.locale || deletion.locale
     const editor = meta.editor || 'markdown'
     const contentType = meta.contentType || EDITOR_CONTENT_TYPES[editor] || 'text'
@@ -3861,7 +3898,7 @@ class Pages {
     if (existing.length > 0 && !overwrite) {
       return null
     }
-    const normalized = existing[0]?.path ?? normalizePath(path)
+    const normalized = existing[0]?.path ?? pagePathToWrite(path)
 
     /*
       A tag the wiki would not let anybody type is left out rather than failing the page: the file came
